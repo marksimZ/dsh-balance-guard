@@ -12,7 +12,7 @@
 
 | # | 问题 | 决策 |
 |---|---|---|
-| 1 | 余额数据源 | **DSH 账号余额优先**（`ctx.deepseekAccount`，平台登录态）；账号未登录时回退到 **API Key 调 `/user/balance`**（两者是同一个平台余额，来源在卡片里标明，`fallbackToApiKey: false` 可关闭回退） |
+| 1 | 余额数据源 | **只用 DSH 账号余额**（`ctx.deepseekAccount`，平台登录态；`getState()` 为异步）。不读 API Key、不调 `/user/balance` |
 | 2 | 位置形态 | **贴边悬浮竖条 + 横向金额胶囊**（`shell.overlay`），始终可见，不占布局 |
 | 3 | 「当前任务」边界 | **当前根会话的当前一轮**（`turn/start` → `turn/end`） |
 | 4 | 预测口径 | **结构化估算**：已花（实测计费 token）+ 剩余步数估算，输出 **最小值 / 预期 / 最大值** 区间 |
@@ -149,17 +149,17 @@ Host 半（src/index.ts，Node/TS）
 2. 每轮计费 token 的折叠（`session/event` 的 `assistant/message.usage`）是 Host 侧的会话日志；
 3. `shell.overlay` 的注入面**不含** `useProjection`，浏览器拿不到会话投影，只能向 Host 要。
 
-**服务依赖策略（不能让 fiber 挂起等一个缺席的服务）**：
+**服务依赖（`inject` 声明，全部必需）**：
 
-| 服务 | 依赖方式 | 缺席时 |
+| 服务 | 依赖方式 | 用途 |
 |---|---|---|
-| `webServer` | 必需（`inject`） | 插件不激活（没有路由就没有数据通路） |
-| `deepseekAccount` | 可选（`ctx.get('deepseekAccount')`） | 灰色「余额不可用」条 |
-| `sessionProjections` | 可选（`ctx.get('sessionProjections')`） | 只显示余额，不显示预测 |
-| `webServer.register` / `index-inject` | 必需的既有 seam | 同 `webServer` |
+| `webServer` | 必需 | 状态路由的载体 |
+| `deepseekAccount` | 必需 | 账号态（异步 `getState()`）与余额 |
+| `sessionProjections` | 必需 | `tokenUsage` / `contextPressure` / `modelSelection` |
 
-Cordis 的 `inject` 数组是「必需依赖，缺席就等待」，所以可选服务一律走 `ctx.get()` / `ctx.inject([...])`，
-否则一个没有账号服务的 Web 组合会让整个插件永远不加载。
+Cordis 要求访问服务前先在 `inject` 里声明；**未声明的属性访问会直接抛错**（这曾让路由返回 500）。
+不声明可选服务、而是把三个都设为必需，是因为三者都是 Desktop / Web 组合的既有服务，缺席时
+「没有插件」比「半个插件」诚实。
 
 **为什么用自建 HTTP 路由而不是 `@Remote`？** Remote 方法由 Typert 构建流水线从 Host 装饰器生成，
 插件不在 Harness 构建内，必须自带线协议；路由走 `ctx.webServer.register({kind:'exact'})`，
@@ -208,13 +208,11 @@ deepseekAccount ───▶│ 余额轮询（30s，缓存 25s，失败保留�
   `version`（`window.__DSH_BOOT__` 的版本，取不到用配置值）、`tz`（`-new Date().getTimezoneOffset()*60`）
   作为查询参数带上；Host 缓存最近一份用于 `getBalance`。这些值只影响 Platform 的客户端请求头，
   不参与鉴权。
-- **API Key 回退（实施时按运行环境追加）**：验证发现本机 DSH 账号未登录，账号路径拿不到数字。
-  一次刷新里账号优先；账号未登录或账号读取失败时，Host 通过 `ctx.credentials` 解析
-  `credentialRef`（默认 `DEEPSEEK_API_KEY`）并请求 `endpoint`（默认 `/user/balance`），
-  读取 `balance_infos[]` 的 `total_balance` / `granted_balance` / `topped_up_balance`。
-  快照的 `account.source` 标明 `account` 或 `api-key`，卡片据此显示「余额来源」。
-  两个来源都不可用才显示灰色「未登录账号」；读取失败保留上次成功读数并附错误说明。
-  `fallbackToApiKey: false` 可关闭回退，回到「只用账号」。
+- **`getState()` 是异步的**（实现为 `async getState(): Promise<AccountView>`）。同步读取会拿到
+  Promise、`view.status` 为 `undefined`，从而把已登录账号误判成 `signed-out`——这是 v0.2.0 之前的
+  真实缺陷，现在 `host-smoke` 用异步 fake 钉死这个契约。
+- **登录态与读取失败的区别**：账号**显式未登录**时清空余额读数、显示灰色「未登录账号」；
+  **读取失败**（网络/超时）保留上次成功读数并在卡片里标注错误。
 
 ### 3.2 用量：`ctx.sessionProjections`
 
@@ -450,10 +448,6 @@ gapCny       = requiredCny − effectiveBalanceCny
 | `holidays` | `[]` | 中国法定节假日（`YYYY-MM-DD`），影响峰谷判定 |
 | `balanceLagCompensation` | `true` | 余额滞后补偿（§3.4） |
 | `clientVersion` | `''` | 客户端上报版本缺失时的兜底值 |
-| `credentialRef` | `DEEPSEEK_API_KEY` | 回退路径使用的凭据引用 |
-| `endpoint` | `https://api.deepseek.com/user/balance` | 回退路径的余额端点 |
-| `timeoutMs` | `10000` | 回退请求超时 |
-| `fallbackToApiKey` | `true` | 账号未登录时是否回退到 API Key |
 
 ---
 
@@ -510,8 +504,7 @@ dsh-balance-guard/
 5. **多会话**：宿主只暴露「最近活跃的根会话那一轮」；同时跑多个会话时数字会切到最近活跃者，
    卡片用会话标题标明。
 6. **价格漂移**：官方明确可能调价；价目表带抓取日期，改价是改一个常量 + 一条测试。
-7. **账号服务缺失 / 账号未登录**：优先回退到 API Key `/user/balance`；两个来源都不可用时
-   降级成灰色条，不报错、不消失。
+7. **账号未登录**：清空读数、显示灰色「未登录账号」，不报错、不消失；读取失败则保留上次读数。
 8. **币种**：账号钱包为 USD 时直接显示美元；不做跨币种汇率显示（避免双重换算误差）。
 9. **路由暴露**：只读聚合数字、同源、无令牌；shipped Web 组合只绑回环，不接受外部访问。
 
