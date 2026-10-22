@@ -108,7 +108,9 @@ const account = {
     value: [{ currency: 'CNY', balance: '12.3400000000' }],
     bonusWallets: [{ currency: 'CNY', balance: '2.0000000000' }],
   },
-  getState() {
+  // Async on purpose: the real account service returns a promise, and reading
+  // it synchronously once misreported every signed-in account as signed out.
+  async getState() {
     return {
       status: this.signedIn ? 'credential-stored' : 'signed-out',
       links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' },
