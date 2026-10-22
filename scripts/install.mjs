@@ -90,10 +90,6 @@ function merged(text) {
     '        holidays: []',
     '        balanceLagCompensation: true',
     '        clientVersion: ""',
-    '        credentialRef: DEEPSEEK_API_KEY',
-    '        endpoint: https://api.deepseek.com/user/balance',
-    '        timeoutMs: 10000',
-    '        fallbackToApiKey: true',
     '',
   ].join('\n')
   const stripped = text.replace(/^\s*\[\s*\]\s*$/m, '')
