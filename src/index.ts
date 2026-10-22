@@ -85,6 +85,14 @@ export interface Config {
   readonly balanceLagCompensation?: boolean
   /** Client version header used when the page cannot report one. @default '' */
   readonly clientVersion?: string
+  /** Credential reference holding the provider key for the fallback. @default 'DEEPSEEK_API_KEY' */
+  readonly credentialRef?: string
+  /** Provider balance endpoint used by the fallback. @default 'https://api.deepseek.com/user/balance' */
+  readonly endpoint?: string
+  /** Timeout for one fallback request in milliseconds. @default 10000 */
+  readonly timeoutMs?: number
+  /** Fall back to the provider balance endpoint when no DSH account is signed in. @default true */
+  readonly fallbackToApiKey?: boolean
 }
 
 /** Normalized configuration. */
@@ -104,6 +112,10 @@ export interface Settings {
   holidays: string[]
   balanceLagCompensation: boolean
   clientVersion: string
+  credentialRef: string
+  endpoint: string
+  timeoutMs: number
+  fallbackToApiKey: boolean
 }
 
 /** Defaults documented in the README and mirrored by `cordis.patch.yml`. */
@@ -123,6 +135,16 @@ const DEFAULTS: Settings = {
   holidays: [],
   balanceLagCompensation: true,
   clientVersion: '',
+  credentialRef: 'DEEPSEEK_API_KEY',
+  endpoint: 'https://api.deepseek.com/user/balance',
+  timeoutMs: 10_000,
+  fallbackToApiKey: true,
+}
+
+/** Where the "top up" / "usage" links point when no DSH account view exists. */
+const DEFAULT_LINKS = {
+  usageUrl: 'https://platform.deepseek.com/usage',
+  topUpUrl: 'https://platform.deepseek.com/top_up',
 }
 
 /* ------------------------------------------------------------------ types */
@@ -153,6 +175,33 @@ interface AccountClientMetadata {
 interface AccountService {
   getState(): AccountView
   getBalance(client: AccountClientMetadata): Promise<AccountBalance | null>
+}
+
+interface CredentialsService {
+  resolve(reference: unknown): Promise<{ value?: unknown } | undefined>
+}
+
+/** Where the displayed balance came from. */
+type BalanceSource = 'account' | 'api-key'
+
+/** One normalized balance reading, whichever source produced it. */
+interface BalanceReading {
+  currency: string
+  total: number
+  normal?: number
+  bonus?: number
+  fetchedAt: number
+  source: BalanceSource
+}
+
+interface FetchResponseLike {
+  ok: boolean
+  status: number
+  json(): Promise<unknown>
+}
+
+interface FetchLike {
+  (input: string, init?: { headers?: Record<string, string>; signal?: AbortSignal }): Promise<FetchResponseLike>
 }
 
 interface ProjectionRegistry {
@@ -237,6 +286,8 @@ export interface AccountSnapshot {
   error?: string
   errorAt?: number
   links?: { usageUrl?: string; topUpUrl?: string }
+  /** Where the amount came from, so the card can name it. */
+  source?: string
 }
 
 /** Task section of the wire snapshot; absent when nothing has run yet. */
@@ -312,6 +363,12 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Parse a provider money value without letting a malformed string become NaN. */
+function parseMoney(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''))
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
 /** Normalize a partial row config against the defaults. */
 function normalize(config: Config | undefined): Settings {
   const positive = (value: number | undefined, fallback: number): number =>
@@ -332,6 +389,10 @@ function normalize(config: Config | undefined): Settings {
     holidays: Array.isArray(config?.holidays) ? config.holidays.filter(entry => typeof entry === 'string') : [],
     balanceLagCompensation: config?.balanceLagCompensation ?? DEFAULTS.balanceLagCompensation,
     clientVersion: text(config?.clientVersion),
+    credentialRef: text(config?.credentialRef) || DEFAULTS.credentialRef,
+    endpoint: text(config?.endpoint) || DEFAULTS.endpoint,
+    timeoutMs: positive(config?.timeoutMs, DEFAULTS.timeoutMs),
+    fallbackToApiKey: config?.fallbackToApiKey ?? DEFAULTS.fallbackToApiKey,
   }
 }
 
@@ -377,47 +438,115 @@ export function apply(ctx: Context, config?: Config): void {
 
   let accountView: AccountView | undefined
   let accountMissing = false
-  let balance: { wallets: readonly Wallet[]; bonusWallets: readonly Wallet[]; fetchedAt: number } | undefined
+  let reading: BalanceReading | undefined
   let balanceError: { message: string; at: number } | undefined
   let balanceInFlight: Promise<void> | undefined
+  let attempted = false
+  let lastAttemptAt = 0
+
+  const credentialsService = (): CredentialsService | undefined => readService<CredentialsService>(ctx, 'credentials')
+
+  const fetchImpl = (): FetchLike | undefined => (globalThis as unknown as { fetch?: FetchLike }).fetch
+
+  /** Resolve the provider key through the Harness credential seam. */
+  const providerKey = async (): Promise<string | undefined> => {
+    const credentials = credentialsService()
+    if (credentials?.resolve === undefined) return undefined
+    const resolved = await credentials.resolve(settings.credentialRef)
+    const value = resolved?.value
+    return typeof value === 'string' && value.length > 0 ? value : undefined
+  }
+
+  /** The DSH-account reading; throws when the account reports a failure. */
+  const readAccountBalance = async (account: AccountService): Promise<BalanceReading | undefined> => {
+    const view = account.getState()
+    accountView = view
+    if (view.status !== 'credential-stored') return undefined
+    const result = await account.getBalance(metadata)
+    if (result === null || result === undefined || result.status !== 'ready') throw new Error('账号余额读取失败')
+    const wallets = Array.isArray(result.value) ? result.value : []
+    const bonusWallets = Array.isArray(result.bonusWallets) ? result.bonusWallets : []
+    const currency = pickCurrency(wallets, bonusWallets)
+    return {
+      currency,
+      total: walletSum(wallets, currency) + walletSum(bonusWallets, currency),
+      normal: walletSum(wallets, currency),
+      bonus: walletSum(bonusWallets, currency),
+      fetchedAt: Date.now(),
+      source: 'account',
+    }
+  }
+
+  /** The provider `/user/balance` reading used when no DSH account is signed in. */
+  const readApiKeyBalance = async (): Promise<BalanceReading | undefined> => {
+    const fetchFn = fetchImpl()
+    if (fetchFn === undefined) throw new Error('this Host has no fetch implementation')
+    const key = await providerKey()
+    if (key === undefined) throw new Error(`no credential: ${settings.credentialRef}`)
+    const abort = new AbortController()
+    const timer = setTimeout(() => { abort.abort() }, settings.timeoutMs)
+    try {
+      const response = await fetchFn(settings.endpoint, {
+        headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
+        signal: abort.signal,
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status} from ${settings.endpoint}`)
+      const payload = (await response.json()) as Record<string, unknown>
+      const infos = Array.isArray(payload?.balance_infos) ? payload.balance_infos as Record<string, unknown>[] : []
+      const entry = infos.find(candidate => text(candidate?.currency) === 'CNY') ?? infos[0]
+      if (entry === undefined) throw new Error('the provider returned no balance')
+      const total = parseMoney(entry.total_balance)
+      if (total === undefined) throw new Error('the provider returned a malformed balance')
+      const granted = parseMoney(entry.granted_balance)
+      const toppedUp = parseMoney(entry.topped_up_balance)
+      return {
+        currency: text(entry.currency) || 'CNY',
+        total,
+        ...(toppedUp === undefined ? {} : { normal: toppedUp }),
+        ...(granted === undefined ? {} : { bonus: granted }),
+        fetchedAt: Date.now(),
+        source: 'api-key',
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
 
   const refreshBalance = (): Promise<void> => {
     if (balanceInFlight !== undefined) return balanceInFlight
-    const account = accountService()
-    if (account === undefined) {
-      accountMissing = true
-      return Promise.resolve()
-    }
-    accountMissing = false
+    lastAttemptAt = Date.now()
     balanceInFlight = (async () => {
+      let failure: string | undefined
+      let next: BalanceReading | undefined
       try {
-        let view: AccountView
-        try {
-          view = account.getState()
-        } catch (error) {
-          balanceError = { message: `账号状态读取失败：${messageOf(error)}`, at: Date.now() }
-          return
+        const account = accountService()
+        const credentials = credentialsService()
+        const fallback = settings.fallbackToApiKey && credentials !== undefined
+        if (account === undefined) {
+          accountMissing = true
+        } else {
+          accountMissing = false
+          try {
+            next = await readAccountBalance(account)
+          } catch (error) {
+            failure = messageOf(error)
+          }
         }
-        accountView = view
-        if (view.status !== 'credential-stored') {
-          balance = undefined
+        if (next === undefined && fallback) {
+          try {
+            next = await readApiKeyBalance()
+          } catch (error) {
+            failure = failure ?? messageOf(error)
+          }
+        }
+        attempted = true
+        if (next !== undefined) {
+          reading = next
           balanceError = undefined
-          return
+        } else if (failure !== undefined) {
+          balanceError = { message: failure, at: Date.now() }
+          ctx.logger?.warn?.(`[${name}] balance read failed: ${failure}`)
         }
-        const result = await account.getBalance(metadata)
-        if (result === null || result === undefined || result.status !== 'ready') {
-          balanceError = { message: '账号余额读取失败', at: Date.now() }
-          return
-        }
-        balance = {
-          wallets: Array.isArray(result.value) ? result.value : [],
-          bonusWallets: Array.isArray(result.bonusWallets) ? result.bonusWallets : [],
-          fetchedAt: Date.now(),
-        }
-        balanceError = undefined
-      } catch (error) {
-        balanceError = { message: messageOf(error), at: Date.now() }
-        ctx.logger?.warn?.(`[${name}] balance read failed: ${messageOf(error)}`)
       } finally {
         balanceInFlight = undefined
       }
@@ -426,19 +555,13 @@ export function apply(ctx: Context, config?: Config): void {
   }
 
   const ensureBalance = async (): Promise<void> => {
-    if (balance !== undefined && Date.now() - balance.fetchedAt < settings.balanceTtlMs) return
+    if (Date.now() - lastAttemptAt < settings.balanceTtlMs) return
     await refreshBalance()
   }
 
-  const totals = (): { currency: string; normal: number; bonus: number; total: number } | undefined => {
-    if (balance === undefined) return undefined
-    const currency = pickCurrency(balance.wallets, balance.bonusWallets)
-    const normal = walletSum(balance.wallets, currency)
-    const bonus = walletSum(balance.bonusWallets, currency)
-    return { currency, normal, bonus, total: normal + bonus }
-  }
+  const displayCurrency = (): string => reading?.currency ?? 'CNY'
 
-  const displayRate = (): number => (totals()?.currency === 'USD' ? 1 : settings.cnyPerUsd)
+  const displayRate = (): number => (displayCurrency() === 'USD' ? 1 : settings.cnyPerUsd)
 
   /* ------------------------------------------------------- session folding */
 
@@ -565,11 +688,12 @@ export function apply(ctx: Context, config?: Config): void {
   /* ----------------------------------------------------- snapshot assembly */
 
   const lagAmount = (): number => {
-    if (!settings.balanceLagCompensation || balance === undefined) return 0
+    if (!settings.balanceLagCompensation || reading === undefined) return 0
+    const fetchedAt = reading.fetchedAt
     const usd = recentTurns
-      .filter(entry => entry.at > balance!.fetchedAt)
+      .filter(entry => entry.at > fetchedAt)
       .reduce((sum, entry) => sum + entry.costUsd, 0)
-    return toDisplayCurrency(usd, totals()?.currency ?? 'CNY', settings.cnyPerUsd)
+    return toDisplayCurrency(usd, displayCurrency(), settings.cnyPerUsd)
   }
 
   const averageSteps = (history: readonly SettledTurn[]): number | undefined => {
@@ -632,7 +756,7 @@ export function apply(ctx: Context, config?: Config): void {
     const remainingMin = estimate.remainingMinUsd * rate
     const remainingExpected = estimate.remainingExpectedUsd * rate
     const remainingMax = estimate.remainingMaxUsd * rate
-    const balanceAmount = totals()?.total
+    const balanceAmount = reading?.total
     const verdict = balanceAmount === undefined ? undefined : judge({
       balance: balanceAmount,
       lag: lagAmount(),
@@ -681,7 +805,7 @@ export function apply(ctx: Context, config?: Config): void {
     const model = modelOf(track)
     const price = priceFor(model, isPeak(Date.now(), settings.holidays))
     const title = titleOf(track)
-    const balanceAmount = totals()?.total
+    const balanceAmount = reading?.total
     const verdict = balanceAmount === undefined ? undefined : judge({
       balance: balanceAmount,
       lag: lagAmount(),
@@ -733,30 +857,31 @@ export function apply(ctx: Context, config?: Config): void {
   }
 
   const accountSnapshot = (): AccountSnapshot => {
-    const totalsNow = totals()
-    const scale = scaleOf(totalsNow?.total)
-    const state: AccountSnapshot['state'] = accountMissing
-      ? 'unavailable'
-      : accountView === undefined
+    const scale = scaleOf(reading?.total)
+    const state: AccountSnapshot['state'] = reading !== undefined
+      ? 'signed-in'
+      : !attempted
         ? 'loading'
-        : accountView.status === 'credential-stored'
-          ? 'signed-in'
+        : accountMissing && !settings.fallbackToApiKey
+          ? 'unavailable'
           : 'signed-out'
+    const links = accountView?.links ?? DEFAULT_LINKS
     return {
       state,
-      currency: totalsNow?.currency ?? 'CNY',
-      symbol: symbolOf(totalsNow?.currency ?? 'CNY'),
-      ...(totalsNow === undefined ? {} : {
-        total: totalsNow.total,
-        normal: totalsNow.normal,
-        bonus: totalsNow.bonus,
+      currency: displayCurrency(),
+      symbol: symbolOf(displayCurrency()),
+      ...(reading === undefined ? {} : {
+        total: reading.total,
+        ...(reading.normal === undefined ? {} : { normal: reading.normal }),
+        ...(reading.bonus === undefined ? {} : { bonus: reading.bonus }),
+        source: reading.source,
       }),
       tone: scale.tone,
       ratio: scale.ratio,
       overflow: scale.overflow,
-      fetchedAt: balance?.fetchedAt ?? 0,
+      fetchedAt: reading?.fetchedAt ?? 0,
       ...(balanceError === undefined ? {} : { error: balanceError.message, errorAt: balanceError.at }),
-      ...(accountView?.links === undefined ? {} : { links: accountView.links }),
+      links,
     }
   }
 
