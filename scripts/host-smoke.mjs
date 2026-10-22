@@ -48,6 +48,9 @@ function mockContext(services) {
   const listeners = new Map()
   const warnings = []
   return {
+    // The real context exposes declared services as properties; `inject`
+    // covers webServer / deepseekAccount / credentials / sessionProjections.
+    ...services,
     routes,
     warnings,
     get(name) {
@@ -118,6 +121,7 @@ const account = {
     }
   },
   async getBalance() {
+    if (this.fail === true) throw new Error('boom')
     return this.signedIn ? this.balance : null
   },
 }
@@ -129,38 +133,12 @@ const projections = {
   },
 }
 
-/** Provider key seam; flipping `value` simulates a missing credential. */
-const credentials = {
-  value: 'sk-test',
-  async resolve() {
-    return this.value === undefined ? undefined : { value: this.value }
-  },
-}
-
-/** Stand-in for the provider `/user/balance` endpoint the fallback calls. */
-const fetchCalls = []
-globalThis.fetch = async (input, init) => {
-  fetchCalls.push({ input, init })
-  return {
-    ok: true,
-    status: 200,
-    json: async () => ({
-      is_available: true,
-      balance_infos: [{
-        currency: 'CNY',
-        total_balance: '7.5000000000',
-        granted_balance: '0.5000000000',
-        topped_up_balance: '7.0000000000',
-      }],
-    }),
-  }
-}
-
 const module = await import(pathToFileURL(ENTRY).href)
 check('host module name', module.name, 'dsh-balance-guard')
 check('injection global name', module.INJECTION_GLOBAL, '__DSH_BALANCE_GUARD__')
+check('declares its services', module.inject.join(','), 'webServer,deepseekAccount,sessionProjections')
 
-const ctx = mockContext({ deepseekAccount: account, sessionProjections: projections, credentials })
+const ctx = mockContext({ deepseekAccount: account, sessionProjections: projections })
 module.apply(ctx, { balanceTtlMs: 5, balancePollMs: 60_000, cnyPerUsd: 7.2 })
 await sleep(30)
 
@@ -245,44 +223,35 @@ check('idle task kind', idle.task.kind, 'idle')
 check('idle samples one turn', idle.task.turnsSampled, 1)
 assert('idle range is ordered', idle.task.remainingMin <= idle.task.remainingExpected && idle.task.remainingExpected <= idle.task.remainingMax)
 
-// --- signed out falls back to the provider balance ----------------------
-account.signedIn = false
-await sleep(30)
-const fallback = JSON.parse((await respond(ctx.routes[0].handler)).body)
-check('fallback still has a balance', fallback.account.state, 'signed-in')
-check('fallback source is the API key', fallback.account.source, 'api-key')
-near('fallback total', fallback.account.total, 7.5)
-near('fallback topped-up part', fallback.account.normal, 7)
-near('fallback granted part', fallback.account.bonus, 0.5)
-check('7.50 sits in the red band', fallback.account.tone, 'red')
-check('fallback called the configured endpoint', fetchCalls.length >= 1, true)
-check('fallback sent the bearer key', fetchCalls[fetchCalls.length - 1].init.headers.authorization, 'Bearer sk-test')
-check('fallback keeps a top-up link', fallback.account.links.topUpUrl, 'https://platform.deepseek.com/top_up')
-
-// --- a credential that disappears keeps the last reading, labelled -----
-// Removing the key must not blank a figure the user just saw; the error note
-// is what tells them the number is now unverified.
-credentials.value = undefined
+// --- a failing read keeps the last figure, labelled ---------------------
+// A transient account failure must not blank a figure the user just saw; the
+// error note is what tells them the number is unverified.
+account.fail = true
 await sleep(30)
 const stale = JSON.parse((await respond(ctx.routes[0].handler)).body)
 check('stale reading is still shown', stale.account.state, 'signed-in')
-near('stale reading keeps its amount', stale.account.total, 7.5)
+near('stale reading keeps its amount', stale.account.total, 1.1)
 check('stale reading keeps its band', stale.account.tone, 'red')
-check('stale reading keeps its source', stale.account.source, 'api-key')
-assert(
-  'stale reading explains the credential failure',
-  typeof stale.account.error === 'string' && stale.account.error.includes('credential'),
-)
+assert('stale reading explains the failure', typeof stale.account.error === 'string' && stale.account.error.includes('boom'))
+account.fail = false
 
-// --- a fresh mount with no signed-in account and no key -----------------
+// --- signed out shows the sign-in guidance ------------------------------
+account.signedIn = false
+await sleep(30)
+const signedOut = JSON.parse((await respond(ctx.routes[0].handler)).body)
+check('signed-out state', signedOut.account.state, 'signed-out')
+check('signed-out hides the amount', signedOut.account.total, undefined)
+check('signed-out tone', signedOut.account.tone, 'unknown')
+check('signed-out keeps the top-up link', signedOut.account.links.topUpUrl, 'https://platform.deepseek.com/top_up')
+check('signed-out has no verdict', signedOut.task?.insufficient ?? false, false)
+
+// --- a fresh mount reports loading, then signed-out ---------------------
 const bareCtx = mockContext({ deepseekAccount: account, sessionProjections: projections })
 module.apply(bareCtx, { balanceTtlMs: 5, balancePollMs: 60_000 })
 await sleep(30)
 const bare = JSON.parse((await respond(bareCtx.routes[0].handler)).body)
 check('signed-out state', bare.account.state, 'signed-out')
 check('signed-out hides the amount', bare.account.total, undefined)
-check('signed-out tone', bare.account.tone, 'unknown')
-check('signed-out has no verdict', bare.task?.insufficient ?? false, false)
 
 // --- protocol edges -----------------------------------------------------
 const post = await respond(ctx.routes[0].handler, 'POST')
@@ -295,7 +264,7 @@ check('HEAD has no body', head.body, '')
 for (const forbidden of ['uncachedInputTokens', 'cacheReadTokens', 'messages', 'content"', 'prompt"']) {
   assert(`wire snapshot omits ${forbidden}`, !first.body.includes(forbidden))
 }
-check('the missing credential is logged', ctx.warnings.some(text => text.includes('credential')), true)
+check('the read failure is logged', ctx.warnings.some(text => text.includes('boom')), true)
 
 if (failures.length > 0) {
   console.error(`\n[host-smoke] ${failures.length} of ${checks} checks failed:`)
