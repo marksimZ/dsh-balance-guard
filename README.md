@@ -1,26 +1,24 @@
 # dsh-balance-guard
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that pins your
-**DeepSeek account balance** to the right edge of the GUI as a colour-banded vertical bar, and
+**DeepSeek account balance** to the right edge of the GUI as a quiet colour-coded rail, and
 **projects what the current task will cost** before the balance runs out.
 
 Nothing else changes hands: the balance comes from the DSH account you are already signed into,
 the API key is never read, and no message content leaves the Host.
 
 ```
-                                                       ┌──┐
-                                       ¥12.34  ●       │░░│ ← balance chip (horizontal) + warning dot
-                                                       │▓▓│
-                                       ┌─────────────┐ │▓▓│
-                                       │ 账户余额     │ │▓▓│
-                                       │ ¥12.34      │ └──┘
-                                       │ 本任务已花   │
-                                       │ ¥0.42       │  ← hover card
-                                       │ 预计还需     │
-                                       │ ¥0.90 – 2.30│
-                                       │ ⚠ 预计不足…  │
-                                       │      去充值 →│
-                                       └─────────────┘
+                                                          ╭──────────────╮
+                                                          │ ●  ¥128.40   │ ← 20px chip, always visible
+                                                          ╰──────────────╯
+                                                       ┌────────────────────────────┐
+                                                       │ 账户余额            ● 余额充足 │
+                                                       │ ¥128.40                    │
+                                                       │ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░ │ ← 4px rail / meter
+                                                       │ 本轮已花 ¥0.42  还需 ¥0.90–2.30 │
+                                                       │ 估算依据 ▾                 │
+                                                       │ 更新于 12 秒前      刷新 去充值 │
+                                                       └────────────────────────────┘
 ```
 
 | Balance (account currency) | Band | Meaning |
@@ -28,20 +26,21 @@ the API key is never read, and no message content leaves the Host.
 | `< 10` | **red** | about to run dry |
 | `10 – 30` | **orange** | top up soon |
 | `30 – 50` | **green** | fine |
-| `> 50` | **blue**, plus a light blue-violet wave above the 50 mark | plenty |
+| `> 50` | **blue** | plenty (the excess over the 50 mark is stated in the panel) |
 
-The bar keeps its scale at 50; `> 50` fills it and draws the overflow as a moving wave
-(disabled under `prefers-reduced-motion: reduce`).
+Every colour, radius, shadow and type size comes from the shell's own `--dsw-*` tokens; there is
+no custom palette and no animation beyond a 160–240ms transition. Hover shows a read-only preview
+of the panel, clicking pins it, `Esc` or a click outside closes it.
 
 ## 中文速览
 
-- 在界面最右侧贴边显示一根**账户余额竖条**，颜色：`<10` 红、`10–30` 橙、`30–50` 绿、`>50` 蓝
-  （超出 50 的部分画成浅蓝紫波纹）。
-- 数字是横向的金额胶囊（`¥12.34`），贴着竖条左侧；鼠标悬停竖条或胶囊弹出卡片。
-- 卡片里给出**本轮任务已经花了多少、预计还要花多少（区间）**；预计余额不够跑完时，
-  胶囊上出现一个**静态红点**，卡片里一行红字说明缺口（不弹窗、不发声、竖条不变色）。
-- 余额来自你已登录的 **DSH 账号**（平台登录态），不读 API Key；API Key 和账号令牌都不进浏览器。
-- 以 50 元为满刻度；卡片里还有「去充值」入口、模型、峰谷价、缓存命中率、数据新鲜度。
+- 界面最右缘一根 **4px 极简轨道**，按余额比例填充；旁边常驻一个 **20px 小胶囊**（语义色点 + 金额）。
+- 颜色：`<10` 红、`10–30` 橙、`30–50` 绿、`>50` 蓝；`>50` 的超出部分在面板里以「超刻度 ¥x」说明，
+  不再有波浪动画。
+- 悬停 = 只读预览面板；点击 = 固定面板（`Esc` 或点击外部关闭）。面板里给出**本轮已花 / 预计还需区间**；
+  预计不够跑完时胶囊上出现「!」徽标、面板里一行红字写缺口（不弹窗、不发声）。
+- 余额来自已登录的 **DSH 账号**，不读 API Key；卡片可展开「估算依据」（步数、缓存命中、峰谷价）。
+- 全部视觉走 DSH 主题令牌：11/12/13/16 字号阶、R8/R12/R16 圆角、系统面板阴影；无自定义色板。
 
 ## What it predicts
 
@@ -158,7 +157,7 @@ Host half (src/index.ts)
 Browser half (src/client.js)
   window.__ModuleLoader__.load({ id, factory })           → the whole transport contract
   require('react')                                        → the shell's platform seed
-  ctx.slots.inject('shell.overlay')                       → the fixed bar, chip, dot and card
+  ctx.slots.inject('shell.overlay')                       → the rail, chip and preview/pinned panel
 ```
 
 **Why a Host half?** The account token never reaches the renderer; per-turn billing lives in the
@@ -179,7 +178,7 @@ tested once with plain Node, and a cached browser bundle can never disagree with
 Plain Node, no test framework:
 
 ```sh
-npm test          # policy spec + client spec + bundle smoke + theme tokens
+npm test          # policy spec + client spec + bundle smoke + theme tokens + visual tokens
 npm run test:host # mounts the Host half on a mock context and drives the real route
 npm run verify    # read-only probe of a running GUI
 ```
@@ -187,10 +186,11 @@ npm run verify    # read-only probe of a running GUI
 | Script | What it pins |
 |---|---|
 | `scripts/policy-spec.mjs` | band boundaries (`9.99` red, `10` orange, `30` green, `50` green, `50.01` blue), the peak/off-peak calendar, the official price table, the estimator arithmetic (including the worked example in `DESIGN.md`), the `×1.2 + reserve` verdict and wallet projection |
-| `scripts/client-spec.mjs` | the snapshot → pixels projection: chip copy, marker rule, warning levels, range formatting, poll cadence, wave closure |
+| `scripts/client-spec.mjs` | the snapshot → panel model: chip copy, status word, columns, warning levels, marker rule, detail lines, poll cadence |
 | `scripts/client-smoke.mjs` | the bundle registers through `__ModuleLoader__`, `require('react')`, installs one stylesheet and mounts into `shell.overlay` |
 | `scripts/host-smoke.mjs` | signed in → running turn → short balance → settled turn → failing read keeps the last figure → signed out, over the real route |
-| `scripts/theme-tokens.mjs` | every `var(--dsw-*)` is declared by the shipped theme; the chip is horizontal; the four tones, marker and top-up link survive |
+| `scripts/theme-tokens.mjs` | every `var(--dsw-*)` is declared by the shipped theme; the chip is horizontal; the tones, warning badge and actions survive |
+| `scripts/visual-tokens.mjs` | no raw colours, radii only from `--dsw-radius-*`, type only from the shipped scale, no infinite animation, overlay stays below shell toasts |
 | `scripts/verify-deployed.mjs` | the running GUI serves the bundle **and** the state route |
 
 `theme-tokens` exists because a missing custom property fails silently: the declaration is dropped
