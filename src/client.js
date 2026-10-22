@@ -320,8 +320,9 @@ window.__ModuleLoader__.load({
      *
      * @param {any} snapshot
      * @param {number} [now]
+     * @param {string|null} [fetchError] last transport failure, if any
      */
-    function describe(snapshot, now = Date.now()) {
+    function describe(snapshot, now = Date.now(), fetchError = null) {
       const account = snapshot !== null && typeof snapshot === 'object' && snapshot.account !== null && typeof snapshot.account === 'object'
         ? snapshot.account
         : { state: 'loading', tone: 'unknown', ratio: 0, overflow: 0, symbol: '¥' }
@@ -332,12 +333,15 @@ window.__ModuleLoader__.load({
       const state = typeof account.state === 'string' ? account.state : 'loading'
       const signedIn = state === 'signed-in'
       const known = signedIn && typeof account.total === 'number' && Number.isFinite(account.total)
+      // A dead transport must not look like an endless first read: once the
+      // route has answered with an error, say so instead of "读取中…".
+      const failed = typeof fetchError === 'string' && fetchError.length > 0
 
       const chip = state === 'signed-out'
         ? '未登录账号'
         : state === 'unavailable'
           ? '余额不可用'
-          : known ? symbol + formatAmount(account.total) : '读取中…'
+          : known ? symbol + formatAmount(account.total) : failed ? '读取失败' : '读取中…'
       const value = known ? symbol + formatAmount(account.total) : chip
 
       const rows = []
@@ -374,8 +378,7 @@ window.__ModuleLoader__.load({
 
       if (state === 'signed-out') notes.push('在 DSH 账号设置里登录后显示余额')
       if (state === 'unavailable') notes.push('未找到 DSH 账号服务，插件无法读取余额')
-      if (account.source === 'api-key') notes.push('余额来源：API Key 账户')
-      else if (account.source === 'account') notes.push('余额来源：DSH 账号')
+      if (account.source === 'account') notes.push('余额来源：DSH 账号')
 
       if (account.error !== undefined) {
         notes.push('⚠ ' + account.error + '（' + relativeTime(account.errorAt, now) + '）')
@@ -509,7 +512,7 @@ window.__ModuleLoader__.load({
         return () => { clearInterval(timer) }
       }, [open])
 
-      const view = describe(snapshot, now)
+      const view = describe(snapshot, now, fetchError)
       const symbol = snapshot !== null && typeof snapshot === 'object' && snapshot.account !== null && typeof snapshot.account === 'object' && typeof snapshot.account.symbol === 'string'
         ? snapshot.account.symbol
         : '¥'
