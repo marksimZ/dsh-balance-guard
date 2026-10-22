@@ -2,10 +2,10 @@
  * Client spec — the snapshot-to-pixels projection, pinned.
  *
  * Loads the real browser bundle through a stubbed `window.__ModuleLoader__`,
- * asks for its test seam, and asserts the copy, the warning levels, the marker
- * rule, the poll cadence and the wave geometry. No DOM and no browser: the
- * render path is a direct map of `describe()`, so this is where the product
- * copy is actually tested.
+ * asks for its test seam, and asserts the v0.4 panel model: chip copy, status
+ * word, columns, warning levels, the marker rule, detail lines and the poll
+ * cadence. No DOM and no browser: the render path is a direct map of
+ * `describe()`, so this is where the product copy is actually tested.
  *
  * Usage: node scripts/client-spec.mjs
  */
@@ -64,7 +64,7 @@ check('injects the slot service', module.inject.includes('slots'), true)
 check('apply is a function', typeof module.apply, 'function')
 assert('test seam present', module.__internals !== undefined)
 
-const { describe, delayFor, formatAmount, money, range, relativeTime, basisText, wavePath, waveBandHeight } = module.__internals
+const { describe, delayFor, formatAmount, money, range, relativeTime, basisText, statusText } = module.__internals
 
 // --- fixtures -----------------------------------------------------------
 const NOW = 1_700_000_000_000
@@ -76,7 +76,7 @@ const running = {
     state: 'signed-in', currency: 'CNY', symbol: '¥',
     total: 12.34, normal: 10.34, bonus: 2,
     tone: 'orange', ratio: 12.34 / 50, overflow: 0,
-    fetchedAt: NOW - 12_000, links: LINKS,
+    fetchedAt: NOW - 12_000, links: LINKS, source: 'account',
   },
   task: {
     kind: 'running', sessionId: 's1', title: 'demo', turn: 1,
@@ -92,19 +92,24 @@ const running = {
 
 const runningView = describe(running, NOW)
 check('running chip', runningView.chip, '¥12.34')
-check('running value', runningView.value, '¥12.34')
+check('running hero', runningView.hero, '¥12.34')
 check('running tone', runningView.tone, 'orange')
 near('running ratio', runningView.ratio, 12.34 / 50)
 check('running overflow', runningView.overflow, 0)
 check('running marker', runningView.marker, true)
-check('running row labels', runningView.rows.map(row => row.label), ['本任务已花', '预计还需', '估算依据', '模型'])
-check('spent row', runningView.rows[0].value, '¥0.32')
-check('remaining row is a range', runningView.rows[1].value, '¥0.16 – ¥3.35')
-check('basis names the measured cache hit', runningView.rows[2].value, '8 步 · 缓存命中 95%（实测）· 峰时价')
+check('running status word', runningView.status, '预计不足')
+check('running meter is shown', runningView.meter, true)
+check('running scale label', runningView.scaleLabel, '50 为满刻度')
+check('running columns', runningView.columns.map(column => column.label), ['本轮已花', '预计还需'])
+check('spent column', runningView.columns[0].value, '¥0.32')
+check('remaining column is a range', runningView.columns[1].value, '¥0.16 – ¥3.35')
 check('warning level', runningView.warning.level, 'error')
 check('warning text', runningView.warning.text, '预计不足，缺口 ¥2.09')
-assert('subagent note present', runningView.notes.some(note => note.includes('子代理')))
-assert('freshness note present', runningView.notes.some(note => note.startsWith('更新于')))
+assert('basis detail present', runningView.detail.some(line => line.includes('8 步 · 缓存命中 95%（实测）· 峰时价')))
+assert('model detail present', runningView.detail.some(line => line.includes('deepseek-flash')))
+assert('subagent detail present', runningView.detail.some(line => line.includes('子代理')))
+assert('source detail present', runningView.detail.some(line => line.includes('DSH 账号')))
+check('footnote is relative freshness', runningView.footnote, '更新于 12 秒前')
 check('top-up link href', runningView.link.href, LINKS.topUpUrl)
 check('top-up link label', runningView.link.label, '去充值')
 
@@ -134,23 +139,25 @@ const idleView = describe({
     insufficient: false, risky: false, subagents: 0, usageAvailable: true, turnsSampled: 3,
   },
 }, NOW)
-check('idle first row', idleView.rows[0].label, '下一任务预计')
-check('idle range', idleView.rows[0].value, '¥0.40 – ¥1.10')
-check('idle sample row', idleView.rows[1].value, '3 轮')
+check('idle first column', idleView.columns[0].label, '下一任务预计')
+check('idle range', idleView.columns[0].value, '¥0.40 – ¥1.10')
+check('idle sample column', idleView.columns[1].value, '3 轮')
 check('idle marker', idleView.marker, false)
 check('idle warning', idleView.warning, null)
 
-// Signed out: grey bar, no amount, no prediction.
+// Signed out: grey rail, no amount, no meter.
 const signedOut = describe({
   updatedAt: NOW,
   account: { state: 'signed-out', currency: 'CNY', symbol: '¥', tone: 'unknown', ratio: 0, overflow: 0, fetchedAt: 0, links: LINKS },
   task: null,
   config: running.config,
 }, NOW)
-check('signed-out chip', signedOut.chip, '未登录账号')
-check('signed-out value', signedOut.value, '未登录账号')
+check('signed-out chip', signedOut.chip, '未登录')
+check('signed-out hero', signedOut.hero, '未登录')
 check('signed-out marker', signedOut.marker, false)
-assert('signed-out explains itself', signedOut.notes.some(note => note.includes('登录')))
+check('signed-out meter hidden', signedOut.meter, false)
+check('signed-out footnote', signedOut.footnote, '未登录账号')
+assert('signed-out explains itself', signedOut.detail.some(line => line.includes('登录')))
 
 const unavailable = describe({
   updatedAt: NOW,
@@ -158,8 +165,8 @@ const unavailable = describe({
   task: null,
   config: running.config,
 }, NOW)
-check('unavailable chip', unavailable.chip, '余额不可用')
-assert('unavailable explains itself', unavailable.notes.some(note => note.includes('账号服务')))
+check('unavailable chip', unavailable.chip, '不可用')
+assert('unavailable explains itself', unavailable.detail.some(line => line.includes('账号服务')))
 
 const loading = describe(null, NOW)
 check('loading chip', loading.chip, '读取中…')
@@ -169,9 +176,9 @@ check('loading marker', loading.marker, false)
 // A dead transport must not read as an endless first load.
 const deadTransport = describe(null, NOW, 'HTTP 500')
 check('failed transport chip', deadTransport.chip, '读取失败')
-check('failed transport value', deadTransport.value, '读取失败')
+check('failed transport footnote', deadTransport.footnote, '页面读取失败')
 
-// Blue band: whole bar blue, wave above the scale.
+// Blue band: full rail, the overflow becomes copy instead of animation.
 const blueView = describe({
   ...running,
   account: { ...running.account, total: 88, tone: 'blue', ratio: 1, overflow: 38 },
@@ -179,6 +186,8 @@ const blueView = describe({
 check('blue tone', blueView.tone, 'blue')
 check('blue ratio pinned to 1', blueView.ratio, 1)
 check('blue overflow', blueView.overflow, 38)
+check('blue scale label names the overflow', blueView.scaleLabel, '超刻度 ¥38.00 · 50 为满刻度')
+check('blue status word', blueView.status, '预计不足')
 
 // USD account keeps its own currency symbol.
 const usdView = describe({
@@ -193,20 +202,15 @@ const staleView = describe({
   ...running,
   account: { ...running.account, fetchedAt: NOW - 720_000, error: 'HTTP 500', errorAt: NOW - 60_000 },
 }, NOW)
-assert('stale note carries the error', staleView.notes.some(note => note.includes('HTTP 500')))
+assert('stale detail carries the error', staleView.detail.some(line => line.includes('HTTP 500')))
 check('stale chip keeps the amount', staleView.chip, '¥12.34')
-
-// The card names where the number came from.
-const accountView = describe({ ...running, account: { ...running.account, source: 'account' } }, NOW)
-assert('account source is named', accountView.notes.some(note => note.includes('DSH 账号')))
 
 // Missing usage data is reported instead of a fabricated projection.
 const noUsage = describe({
   ...running,
   task: { ...running.task, usageAvailable: false, insufficient: false, risky: false },
 }, NOW)
-check('no-usage basis', noUsage.rows[2].value, '用量数据不可用')
-assert('no-usage row', noUsage.rows.some(row => row.label === '用量'))
+check('no-usage basis', noUsage.detail.some(line => line.includes('用量数据不可用')), true)
 
 // --- formatting ---------------------------------------------------------
 check('formatAmount two decimals', formatAmount(1.2), '1.20')
@@ -225,6 +229,15 @@ check('relative missing', relativeTime(0, NOW), '尚未获取')
 
 check('basis measured peak', basisText({ stepsExpected: 8, cacheHit: 0.95, cacheHitSource: 'measured', peak: true }), '8 步 · 缓存命中 95%（实测）· 峰时价')
 check('basis default off-peak', basisText({ stepsExpected: 6, cacheHit: 0.85, cacheHitSource: 'default', peak: false }), '6 步 · 缓存命中 85%（默认）· 谷时价')
+check('basis no usage', basisText({ usageAvailable: false }), '用量数据不可用')
+
+// --- status word --------------------------------------------------------
+check('status red', statusText('red', false), '即将余额不足')
+check('status orange', statusText('orange', false), '建议充值')
+check('status green', statusText('green', false), '余额正常')
+check('status blue', statusText('blue', false), '余额充足')
+check('status insufficient wins', statusText('blue', true), '预计不足')
+check('status unknown', statusText('unknown', false), '')
 
 // --- cadence ------------------------------------------------------------
 globalThis.document.hidden = false
@@ -235,28 +248,18 @@ globalThis.document.hidden = true
 check('hidden tab slows down', delayFor(running), 15_000)
 globalThis.document.hidden = false
 
-// --- wave geometry ------------------------------------------------------
-const wave = wavePath(20, 40, 7, false)
-assert('wave starts at the left edge', wave.startsWith('M 0.00 20.00'))
-assert('wave spans two whole periods', wave.includes('L 40.00 20.00'))
-assert('wave closes its phase so the loop is seamless', wave.endsWith('Z'))
-assert('wave has no NaN', !wave.includes('NaN'))
-const crest = wavePath(20, 40, 7, true)
-assert('crest is an open line', !crest.endsWith('Z'))
-assert('crest ends on the same phase it started', crest.includes('L 40.00 20.00'))
-
-check('wave height at zero overflow', waveBandHeight(0), 22)
-check('wave height grows then clamps', waveBandHeight(300), 74)
-assert('wave height is monotonic', waveBandHeight(10) <= waveBandHeight(40) && waveBandHeight(40) <= waveBandHeight(300))
-
 // --- stylesheet rules ---------------------------------------------------
 const source = readFileSync(BUNDLE, 'utf8')
 for (const tone of ['red', 'orange', 'green', 'blue']) {
-  assert(`stylesheet has the ${tone} fill`, source.includes(`.dsh-bg-fill[data-tone='${tone}']`))
+  assert(`stylesheet has the ${tone} fill`, source.includes(`[data-tone='${tone}'] .dsh-bg-fill`))
+  assert(`stylesheet has the ${tone} meter`, source.includes(`[data-tone='${tone}'] .dsh-bg-meter-fill`))
 }
-assert('stylesheet paints the marker dot', source.includes('.dsh-bg-marker'))
-assert('stylesheet styles the top-up link', source.includes('.dsh-bg-link'))
+assert('stylesheet paints the rail', source.includes('.dsh-bg-rail'))
+assert('stylesheet paints the chip', source.includes('.dsh-bg-chip'))
+assert('stylesheet paints the warning badge', source.includes('.dsh-bg-bang'))
+assert('stylesheet styles the actions', source.includes('.dsh-bg-btn'))
 assert('stylesheet honours reduced motion', source.includes('prefers-reduced-motion'))
+assert('stylesheet has no infinite animation', !/animation\s*:\s*[^;]*infinite/.test(source))
 assert('value chip is never vertical', !/writing-mode\s*:\s*vertical/.test(source))
 
 if (failures.length > 0) {
