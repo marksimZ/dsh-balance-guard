@@ -28,12 +28,12 @@ import {
 export const name = 'dsh-balance-guard'
 
 /**
- * `webServer` is the only hard dependency: without a route there is no data
- * channel. The account service and the projection registry are optional so a
- * composition that omits one degrades to a grey bar instead of hanging the
- * fiber forever waiting for a service that will never arrive.
+ * Every service this half reads is declared here, so Cordis hands it over
+ * legally. In particular `deepseekAccount.getState()` is async — reading it
+ * synchronously once produced a Promise, so a signed-in account looked signed
+ * out and the bar sat on a grey "未登录账号" forever.
  */
-export const inject = ['webServer']
+export const inject = ['webServer', 'deepseekAccount', 'sessionProjections']
 
 /** The injection property the Client half reads before its first fetch. */
 export const INJECTION_GLOBAL = '__DSH_BALANCE_GUARD__'
@@ -85,14 +85,6 @@ export interface Config {
   readonly balanceLagCompensation?: boolean
   /** Client version header used when the page cannot report one. @default '' */
   readonly clientVersion?: string
-  /** Credential reference holding the provider key for the fallback. @default 'DEEPSEEK_API_KEY' */
-  readonly credentialRef?: string
-  /** Provider balance endpoint used by the fallback. @default 'https://api.deepseek.com/user/balance' */
-  readonly endpoint?: string
-  /** Timeout for one fallback request in milliseconds. @default 10000 */
-  readonly timeoutMs?: number
-  /** Fall back to the provider balance endpoint when no DSH account is signed in. @default true */
-  readonly fallbackToApiKey?: boolean
 }
 
 /** Normalized configuration. */
@@ -112,10 +104,6 @@ export interface Settings {
   holidays: string[]
   balanceLagCompensation: boolean
   clientVersion: string
-  credentialRef: string
-  endpoint: string
-  timeoutMs: number
-  fallbackToApiKey: boolean
 }
 
 /** Defaults documented in the README and mirrored by `cordis.patch.yml`. */
@@ -135,10 +123,6 @@ const DEFAULTS: Settings = {
   holidays: [],
   balanceLagCompensation: true,
   clientVersion: '',
-  credentialRef: 'DEEPSEEK_API_KEY',
-  endpoint: 'https://api.deepseek.com/user/balance',
-  timeoutMs: 10_000,
-  fallbackToApiKey: true,
 }
 
 /** Where the "top up" / "usage" links point when no DSH account view exists. */
@@ -177,31 +161,14 @@ interface AccountService {
   getBalance(client: AccountClientMetadata): Promise<AccountBalance | null>
 }
 
-interface CredentialsService {
-  resolve(reference: unknown): Promise<{ value?: unknown } | undefined>
-}
-
-/** Where the displayed balance came from. */
-type BalanceSource = 'account' | 'api-key'
-
-/** One normalized balance reading, whichever source produced it. */
+/** One normalized balance reading. */
 interface BalanceReading {
   currency: string
   total: number
   normal?: number
   bonus?: number
   fetchedAt: number
-  source: BalanceSource
-}
-
-interface FetchResponseLike {
-  ok: boolean
-  status: number
-  json(): Promise<unknown>
-}
-
-interface FetchLike {
-  (input: string, init?: { headers?: Record<string, string>; signal?: AbortSignal }): Promise<FetchResponseLike>
+  source: 'account'
 }
 
 interface ProjectionRegistry {
@@ -332,19 +299,10 @@ export interface GuardSnapshot {
 
 /* --------------------------------------------------------------- helpers */
 
-/** Read a Cordis service without assuming `ctx.get` exists. */
-function readService<T>(ctx: Context, serviceName: string): T | undefined {
-  const candidate = ctx as unknown as { get?: (key: string) => unknown }
-  if (typeof candidate.get === 'function') {
-    try {
-      const found = candidate.get(serviceName)
-      if (found !== undefined) return found as T
-    } catch {
-      // Fall through to the direct property read.
-    }
-  }
-  const direct = (ctx as unknown as Record<string, unknown>)[serviceName]
-  return direct === undefined ? undefined : direct as T
+/** A declared service, read as a property (legal because of `inject`). */
+function service<T>(ctx: Context, name: string): T | undefined {
+  const direct = (ctx as unknown as Record<string, T | undefined>)[name]
+  return direct === undefined ? undefined : direct
 }
 
 /** Coerce a wire value into a finite number, else zero. */
@@ -361,12 +319,6 @@ function text(value: unknown): string {
 /** Error text without assuming the thrown value is an `Error`. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-/** Parse a provider money value without letting a malformed string become NaN. */
-function parseMoney(value: unknown): number | undefined {
-  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''))
-  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 /** Normalize a partial row config against the defaults. */
@@ -389,10 +341,6 @@ function normalize(config: Config | undefined): Settings {
     holidays: Array.isArray(config?.holidays) ? config.holidays.filter(entry => typeof entry === 'string') : [],
     balanceLagCompensation: config?.balanceLagCompensation ?? DEFAULTS.balanceLagCompensation,
     clientVersion: text(config?.clientVersion),
-    credentialRef: text(config?.credentialRef) || DEFAULTS.credentialRef,
-    endpoint: text(config?.endpoint) || DEFAULTS.endpoint,
-    timeoutMs: positive(config?.timeoutMs, DEFAULTS.timeoutMs),
-    fallbackToApiKey: config?.fallbackToApiKey ?? DEFAULTS.fallbackToApiKey,
   }
 }
 
@@ -422,8 +370,8 @@ export function apply(ctx: Context, config?: Config): void {
   const settings = normalize(config)
   let disposed = false
 
-  const accountService = (): AccountService | undefined => readService<AccountService>(ctx, 'deepseekAccount')
-  const projectionRegistry = (): ProjectionRegistry | undefined => readService<ProjectionRegistry>(ctx, 'sessionProjections')
+  const accountService = (): AccountService | undefined => service<AccountService>(ctx, 'deepseekAccount')
+  const projectionRegistry = (): ProjectionRegistry | undefined => service<ProjectionRegistry>(ctx, 'sessionProjections')
 
   // Metadata only shapes the Platform client headers on a balance request; it
   // is refreshed from the page's query string because only the renderer knows
@@ -444,19 +392,6 @@ export function apply(ctx: Context, config?: Config): void {
   let attempted = false
   let lastAttemptAt = 0
 
-  const credentialsService = (): CredentialsService | undefined => readService<CredentialsService>(ctx, 'credentials')
-
-  const fetchImpl = (): FetchLike | undefined => (globalThis as unknown as { fetch?: FetchLike }).fetch
-
-  /** Resolve the provider key through the Harness credential seam. */
-  const providerKey = async (): Promise<string | undefined> => {
-    const credentials = credentialsService()
-    if (credentials?.resolve === undefined) return undefined
-    const resolved = await credentials.resolve(settings.credentialRef)
-    const value = resolved?.value
-    return typeof value === 'string' && value.length > 0 ? value : undefined
-  }
-
   /** The DSH-account reading; throws when the account reports a failure. */
   const readAccountBalance = async (account: AccountService): Promise<BalanceReading | undefined> => {
     // `getState()` is async on the account service; a synchronous read would
@@ -464,7 +399,13 @@ export function apply(ctx: Context, config?: Config): void {
     const view = await account.getState()
     if (view === null || view === undefined || typeof view !== 'object') throw new Error('账号状态读取失败')
     accountView = view
-    if (view.status !== 'credential-stored') return undefined
+    if (view.status !== 'credential-stored') {
+      // An explicit sign-out makes any previous figure meaningless; a transient
+      // read failure below is what keeps the last good value on screen.
+      reading = undefined
+      balanceError = undefined
+      return undefined
+    }
     const result = await account.getBalance(metadata)
     if (result === null || result === undefined || result.status !== 'ready') throw new Error('账号余额读取失败')
     const wallets = Array.isArray(result.value) ? result.value : []
@@ -480,41 +421,6 @@ export function apply(ctx: Context, config?: Config): void {
     }
   }
 
-  /** The provider `/user/balance` reading used when no DSH account is signed in. */
-  const readApiKeyBalance = async (): Promise<BalanceReading | undefined> => {
-    const fetchFn = fetchImpl()
-    if (fetchFn === undefined) throw new Error('this Host has no fetch implementation')
-    const key = await providerKey()
-    if (key === undefined) throw new Error(`no credential: ${settings.credentialRef}`)
-    const abort = new AbortController()
-    const timer = setTimeout(() => { abort.abort() }, settings.timeoutMs)
-    try {
-      const response = await fetchFn(settings.endpoint, {
-        headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
-        signal: abort.signal,
-      })
-      if (!response.ok) throw new Error(`HTTP ${response.status} from ${settings.endpoint}`)
-      const payload = (await response.json()) as Record<string, unknown>
-      const infos = Array.isArray(payload?.balance_infos) ? payload.balance_infos as Record<string, unknown>[] : []
-      const entry = infos.find(candidate => text(candidate?.currency) === 'CNY') ?? infos[0]
-      if (entry === undefined) throw new Error('the provider returned no balance')
-      const total = parseMoney(entry.total_balance)
-      if (total === undefined) throw new Error('the provider returned a malformed balance')
-      const granted = parseMoney(entry.granted_balance)
-      const toppedUp = parseMoney(entry.topped_up_balance)
-      return {
-        currency: text(entry.currency) || 'CNY',
-        total,
-        ...(toppedUp === undefined ? {} : { normal: toppedUp }),
-        ...(granted === undefined ? {} : { bonus: granted }),
-        fetchedAt: Date.now(),
-        source: 'api-key',
-      }
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-
   const refreshBalance = (): Promise<void> => {
     if (balanceInFlight !== undefined) return balanceInFlight
     lastAttemptAt = Date.now()
@@ -523,8 +429,6 @@ export function apply(ctx: Context, config?: Config): void {
       let next: BalanceReading | undefined
       try {
         const account = accountService()
-        const credentials = credentialsService()
-        const fallback = settings.fallbackToApiKey && credentials !== undefined
         if (account === undefined) {
           accountMissing = true
         } else {
@@ -533,13 +437,6 @@ export function apply(ctx: Context, config?: Config): void {
             next = await readAccountBalance(account)
           } catch (error) {
             failure = messageOf(error)
-          }
-        }
-        if (next === undefined && fallback) {
-          try {
-            next = await readApiKeyBalance()
-          } catch (error) {
-            failure = failure ?? messageOf(error)
           }
         }
         attempted = true
@@ -865,7 +762,7 @@ export function apply(ctx: Context, config?: Config): void {
       ? 'signed-in'
       : !attempted
         ? 'loading'
-        : accountMissing && !settings.fallbackToApiKey
+        : accountMissing
           ? 'unavailable'
           : 'signed-out'
     const links = accountView?.links ?? DEFAULT_LINKS
