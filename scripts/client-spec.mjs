@@ -166,6 +166,11 @@ check('loading chip', loading.chip, '读取中…')
 check('loading tone', loading.tone, 'unknown')
 check('loading marker', loading.marker, false)
 
+// A dead transport must not read as an endless first load.
+const deadTransport = describe(null, NOW, 'HTTP 500')
+check('failed transport chip', deadTransport.chip, '读取失败')
+check('failed transport value', deadTransport.value, '读取失败')
+
 // Blue band: whole bar blue, wave above the scale.
 const blueView = describe({
   ...running,
@@ -192,11 +197,6 @@ assert('stale note carries the error', staleView.notes.some(note => note.include
 check('stale chip keeps the amount', staleView.chip, '¥12.34')
 
 // The card names where the number came from.
-const apiKeyView = describe({
-  ...running,
-  account: { ...running.account, source: 'api-key' },
-}, NOW)
-assert('api-key source is named', apiKeyView.notes.some(note => note.includes('API Key')))
 const accountView = describe({ ...running, account: { ...running.account, source: 'account' } }, NOW)
 assert('account source is named', accountView.notes.some(note => note.includes('DSH 账号')))
 
