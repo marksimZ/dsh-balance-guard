@@ -86,9 +86,11 @@ if (typeof snapshot !== 'object' || snapshot === null) throw new Error('state ro
 if (!['loading', 'signed-in', 'signed-out', 'unavailable'].includes(snapshot.account?.state)) {
   throw new Error(`unexpected account state: ${JSON.stringify(snapshot.account?.state)}`)
 }
-console.log('[verify] state route: account =', snapshot.account.state, snapshot.account.total === undefined ? '' : `${snapshot.account.symbol}${snapshot.account.total.toFixed(2)}`)
+const hasAmount = typeof snapshot.account?.total === 'number'
+const source = snapshot.account?.source === undefined ? '' : `, source=${snapshot.account.source}`
+console.log('[verify] state route: account =', snapshot.account.state + source + (hasAmount ? ', amount present' : ', no amount'))
 if (snapshot.task !== null && snapshot.task !== undefined) {
-  console.log('[verify] state route: task =', snapshot.task.kind, 'remaining', snapshot.task.remainingMin, '→', snapshot.task.remainingMax)
+  console.log('[verify] state route: task =', snapshot.task.kind, snapshot.task.insufficient ? '(insufficient)' : '(ok)')
 }
 
 console.log('[verify] OK — the GUI is serving this plugin')
