@@ -73,9 +73,10 @@ const bundleResponse = await fetch(new URL(entry.url, base), { headers: { cookie
 const bundle = await bundleResponse.text()
 if (!bundleResponse.ok) throw new Error(`bundle fetch failed: HTTP ${bundleResponse.status}`)
 console.log(`[verify] bundle: HTTP ${bundleResponse.status}, ${bundle.length} bytes, ${bundleResponse.headers.get('content-type')}`)
-for (const marker of ['__ModuleLoader__.load', "id: 'dsh-balance-guard'", 'shell.overlay', 'dsh-bg-', 'dsh-bg-marker', 'data-tone']) {
+for (const marker of ['__ModuleLoader__.load', "id: 'dsh-balance-guard'", 'shell.overlay', '.dsh-bg-rail', '.dsh-bg-panel', '--dsw-static-deepseek-500', 'data-tone']) {
   if (!bundle.includes(marker)) throw new Error(`served bundle is missing ${marker}`)
 }
+if (bundle.includes('dshbg-scroll')) throw new Error('served bundle still contains the removed wave animation')
 
 // The state route is the actual data path; a 200 with a snapshot shape proves
 // the Host half mounted, not just that the file was served.
