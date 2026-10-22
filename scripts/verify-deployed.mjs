@@ -25,7 +25,7 @@ function option(name) {
   return index >= 0 && index + 1 < process.argv.length ? process.argv[index + 1] : undefined
 }
 
-const base = option('url') ?? process.env.DSH_WEB_URL ?? 'http://127.0.0.1:52259'
+const base = option('url') ?? process.env.DSH_WEB_URL ?? 'http://127.0.0.1:3080'
 const home = option('home') ?? process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? homedir(), '.dsh')
 const authority = new URL(base).host
 
