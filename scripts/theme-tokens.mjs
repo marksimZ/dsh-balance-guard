@@ -42,14 +42,33 @@ const KNOWN_INVALID = [
 const VERIFIED = new Set([
   '--dsw-alias-bg-base',
   '--dsw-alias-bg-layer-1',
+  '--dsw-alias-bg-skeleton',
+  '--dsw-alias-border-l1',
   '--dsw-alias-border-l2',
+  '--dsw-alias-interactive-bg-hover',
   '--dsw-alias-label-primary',
+  '--dsw-alias-label-primary-inverted',
   '--dsw-alias-label-secondary',
   '--dsw-alias-label-tertiary',
   '--dsw-alias-link',
   '--dsw-alias-state-error-primary',
+  '--dsw-alias-state-warn-primary',
   '--dsw-elevation-panel',
   '--dsw-elevation-prominent',
+  '--dsw-elevation-stroke',
+  '--dsw-font-family',
+  '--dsw-radius-lg',
+  '--dsw-radius-sm',
+  '--dsw-radius-xs',
+  '--dsw-static-amber-400',
+  '--dsw-static-amber-500',
+  '--dsw-static-deepseek-400',
+  '--dsw-static-deepseek-500',
+  '--dsw-static-green-400',
+  '--dsw-static-green-500',
+  '--dsw-static-neutral-bluish-400',
+  '--dsw-static-red-400',
+  '--dsw-static-red-600',
 ])
 
 const ASAR = option('asar') ?? process.env.DSH_ASAR ?? 'E:\\dsh\\resources\\app.asar'
@@ -125,7 +144,7 @@ if (problems.length > 0) {
 }
 
 // The amount chip must read horizontally; a vertical writing mode was the old design.
-if (/\.dsh-bg-label[^}]*writing-mode\s*:\s*vertical/.test(css)) {
+if (/\.dsh-bg-chip[^}]*writing-mode\s*:\s*vertical/.test(css)) {
   console.error('[tokens] the amount chip must not use a vertical writing mode')
   process.exit(1)
 }
@@ -134,8 +153,9 @@ if (/\.dsh-bg-label[^}]*writing-mode\s*:\s*vertical/.test(css)) {
 for (const tone of ['red', 'orange', 'green', 'blue']) {
   if (!css.includes(`[data-tone='${tone}']`)) throw new Error(`stylesheet lost the ${tone} tone`)
 }
-if (!css.includes('.dsh-bg-marker')) throw new Error('stylesheet lost the warning marker')
-if (!css.includes('.dsh-bg-link')) throw new Error('stylesheet lost the top-up link')
+if (!css.includes('.dsh-bg-bang')) throw new Error('stylesheet lost the warning badge')
+if (!css.includes('.dsh-bg-btn')) throw new Error('stylesheet lost the action button')
+if (!css.includes('.dsh-bg-rail')) throw new Error('stylesheet lost the rail')
 
 console.log('[tokens] every reference resolves')
 console.log('[tokens] amount chip is horizontal')
