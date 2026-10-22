@@ -1,8 +1,8 @@
 {
   "name": "dsh-balance-guard",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "DSH plugin: your DeepSeek account balance as a colour-banded bar on the right edge, with per-turn cost prediction and a quiet low-balance warning.",
+  "description": "DSH plugin: your DeepSeek account balance as a quiet colour-coded rail on the right edge, with per-turn cost prediction and a low-balance warning.",
   "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
@@ -31,7 +31,7 @@
     "src"
   ],
   "scripts": {
-    "test": "node scripts/policy-spec.mjs && node scripts/client-spec.mjs && node scripts/client-smoke.mjs && node scripts/theme-tokens.mjs",
+    "test": "node scripts/policy-spec.mjs && node scripts/client-spec.mjs && node scripts/client-smoke.mjs && node scripts/theme-tokens.mjs && node scripts/visual-tokens.mjs",
     "test:host": "node --experimental-strip-types scripts/host-smoke.mjs",
     "verify": "node scripts/verify-deployed.mjs",
     "install:profile": "node scripts/install.mjs",
