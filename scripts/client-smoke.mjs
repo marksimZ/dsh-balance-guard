@@ -75,7 +75,8 @@ if (registered.length !== 1) throw new Error(`expected one overlay registration,
 if (registered[0].id !== 'balance-guard') throw new Error(`unexpected overlay id: ${registered[0].id}`)
 if (registered[0].name !== 'shell.overlay') throw new Error(`unexpected slot: ${registered[0].name}`)
 if (tags.length !== 1) throw new Error(`expected one stylesheet tag, got ${tags.length}`)
-if (!String(tags[0].textContent).includes('.dsh-bg-bar')) throw new Error('stylesheet is missing the bar rule')
+if (!String(tags[0].textContent).includes('.dsh-bg-rail')) throw new Error('stylesheet is missing the rail rule')
+if (!String(tags[0].textContent).includes('.dsh-bg-panel')) throw new Error('stylesheet is missing the panel rule')
 if (!Array.isArray(module.inject) || !module.inject.includes('slots')) throw new Error('module does not inject slots')
 for (const dispose of effects) if (typeof dispose === 'function') dispose()
 
