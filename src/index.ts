@@ -173,7 +173,7 @@ interface AccountClientMetadata {
 }
 
 interface AccountService {
-  getState(): AccountView
+  getState(): Promise<AccountView>
   getBalance(client: AccountClientMetadata): Promise<AccountBalance | null>
 }
 
@@ -459,7 +459,10 @@ export function apply(ctx: Context, config?: Config): void {
 
   /** The DSH-account reading; throws when the account reports a failure. */
   const readAccountBalance = async (account: AccountService): Promise<BalanceReading | undefined> => {
-    const view = account.getState()
+    // `getState()` is async on the account service; a synchronous read would
+    // see a Promise and misreport every signed-in account as signed out.
+    const view = await account.getState()
+    if (view === null || view === undefined || typeof view !== 'object') throw new Error('账号状态读取失败')
     accountView = view
     if (view.status !== 'credential-stored') return undefined
     const result = await account.getBalance(metadata)
