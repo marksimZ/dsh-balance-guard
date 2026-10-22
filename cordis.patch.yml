@@ -46,3 +46,11 @@
         balanceLagCompensation: true
         # Client version used when the page cannot report one.
         clientVersion: ""
+        # Credential reference holding the provider key for the fallback.
+        credentialRef: DEEPSEEK_API_KEY
+        # Provider balance endpoint used when no DSH account is signed in.
+        endpoint: https://api.deepseek.com/user/balance
+        # Timeout for one fallback request.
+        timeoutMs: 10000
+        # Fall back to the provider balance endpoint when no account is signed in.
+        fallbackToApiKey: true
