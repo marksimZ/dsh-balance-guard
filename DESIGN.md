@@ -194,7 +194,7 @@ deepseekAccount ───▶│ 余额轮询（30s，缓存 25s，失败保留�
 
 | 能力 | 签名 / 说明 |
 |---|---|
-| `getState()` | 账号态（已登录 / 未登录），不进 Platform |
+| `getState()` | **`Promise<AccountView>`**（异步；同步读会拿到 Promise，从而把已登录误判成未登录） |
 | `getBalance(client)` | `AccountClientMetadata { version, locale, timezoneOffsetSeconds }` → 余额或 `null` |
 | `watch(signal)` | 账号态变化流（登录/退登/切号） |
 | `signOut` / 登录入口 | 不调用；插件只读，登录仍由 DSH 账号设置页负责 |
