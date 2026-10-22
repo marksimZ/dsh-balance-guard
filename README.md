@@ -66,9 +66,25 @@ instead of pretending to know the future.
 
 ## Requirements
 
-- A DSH client with the DeepSeek account signed in (Desktop client or `dsh web` with the account
-  service composed). Signed out, the plugin degrades to a grey "未登录账号" bar.
+- A DSH client with **either** the DeepSeek account signed in **or** a provider API key stored as
+  the credential `DEEPSEEK_API_KEY` (the same key the Harness already uses). The guard prefers
+  the DSH account and falls back to the provider's `/user/balance` endpoint — both point at the
+  same Platform balance, just through different credentials.
 - Node 20+ only for the test/install scripts; the plugin itself has **no build step**.
+
+## Where the number comes from
+
+1. **DSH account (preferred).** When `ctx.deepseekAccount.getState()` reports a stored credential,
+   the Host reads the balance through the account service. The account token never reaches the
+   renderer.
+2. **Provider key (fallback).** When no DSH account is signed in (or the account read fails), the
+   Host resolves `DEEPSEEK_API_KEY` through `ctx.credentials` and calls
+   `https://api.deepseek.com/user/balance` — the same endpoint the API-key balance tools use.
+   Set `fallbackToApiKey: false` to disable this and stay account-only.
+
+The card names the active source (`余额来源：DSH 账号` / `余额来源：API Key 账户`). If neither
+source is available, the bar turns grey and says so instead of showing a made-up number; a reading
+that fails after a successful one stays on screen, clearly labelled with the error.
 
 ## Install
 
@@ -124,6 +140,10 @@ Every key is optional; defaults live in `cordis.patch.yml`.
 | `holidays` | `[]` | UTC dates DeepSeek bills at off-peak all day |
 | `balanceLagCompensation` | `true` | Subtract spend that landed after the reading |
 | `clientVersion` | `""` | Client version used when the page cannot report one |
+| `credentialRef` | `DEEPSEEK_API_KEY` | Credential holding the provider key for the fallback |
+| `endpoint` | `https://api.deepseek.com/user/balance` | Fallback balance endpoint |
+| `timeoutMs` | `10000` | Timeout for one fallback request |
+| `fallbackToApiKey` | `true` | Use the provider key when no DSH account is signed in |
 
 Prices live in [`src/policy.js`](src/policy.js) as `PRICE_TABLE` (USD per 1M tokens, peak and
 off-peak rows for `deepseek-flash` and `deepseek-v4-pro`), with the fetch date and source URL in
@@ -138,6 +158,7 @@ Two halves, one plugin.
 ```text
 Host half (src/index.ts)
   ctx.deepseekAccount.getState() / getBalance(metadata)   → the balance, token stays Host-side
+  ctx.credentials → GET /user/balance                     → fallback when no account is signed in
   ctx.on('session/event')                                 → per-turn billed-token folding
   ctx.sessionProjections.stateOf(...)                     → tokenUsage / contextPressure / modelSelection
   src/policy.js                                           → bands, prices, estimator, verdict (pure)
@@ -178,7 +199,7 @@ npm run verify    # read-only probe of a running GUI
 | `scripts/policy-spec.mjs` | band boundaries (`9.99` red, `10` orange, `30` green, `50` green, `50.01` blue), the peak/off-peak calendar, the official price table, the estimator arithmetic (including the worked example in `DESIGN.md`), the `×1.2 + reserve` verdict and wallet projection |
 | `scripts/client-spec.mjs` | the snapshot → pixels projection: chip copy, marker rule, warning levels, range formatting, poll cadence, wave closure |
 | `scripts/client-smoke.mjs` | the bundle registers through `__ModuleLoader__`, `require('react')`, installs one stylesheet and mounts into `shell.overlay` |
-| `scripts/host-smoke.mjs` | signed in → running turn → short balance → settled turn → signed out, over the real route |
+| `scripts/host-smoke.mjs` | signed in → running turn → short balance → settled turn → fallback to the provider key → stale reading, over the real route |
 | `scripts/theme-tokens.mjs` | every `var(--dsw-*)` is declared by the shipped theme; the chip is horizontal; the four tones, marker and top-up link survive |
 | `scripts/verify-deployed.mjs` | the running GUI serves the bundle **and** the state route |
 
@@ -202,6 +223,10 @@ balance plugin shipped exactly that.
   test.
 - **USD accounts** display in USD; the price catalog is converted with `cnyPerUsd` only for CNY
   accounts.
+- **The fallback is a second credential path.** It reads the same Platform balance through
+  `/user/balance`, so the number matches the account; but DSH's native in-app top-up page belongs
+  to the account settings package, so the card's 去充值 opens the Platform top-up URL in the
+  system browser instead of the embedded page.
 
 ## License
 
