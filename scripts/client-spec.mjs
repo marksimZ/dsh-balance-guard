@@ -191,6 +191,15 @@ const staleView = describe({
 assert('stale note carries the error', staleView.notes.some(note => note.includes('HTTP 500')))
 check('stale chip keeps the amount', staleView.chip, '¥12.34')
 
+// The card names where the number came from.
+const apiKeyView = describe({
+  ...running,
+  account: { ...running.account, source: 'api-key' },
+}, NOW)
+assert('api-key source is named', apiKeyView.notes.some(note => note.includes('API Key')))
+const accountView = describe({ ...running, account: { ...running.account, source: 'account' } }, NOW)
+assert('account source is named', accountView.notes.some(note => note.includes('DSH 账号')))
+
 // Missing usage data is reported instead of a fabricated projection.
 const noUsage = describe({
   ...running,
