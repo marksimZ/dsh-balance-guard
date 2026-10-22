@@ -1,0 +1,48 @@
+# DSH loader overlay for the balance guard.
+#
+# Apply it as a launcher layer:
+#   dsh web --patch D:/vibecoding/dshplugins/dsh-balance-guard/cordis.patch.yml
+#
+# ...or append this one row to your profile's own patch layer
+# (`$DSH_HOME/profiles/<profile>/cordis.patch.yml`, the Desktop client uses
+# `desktop`), which reloads live. `node scripts/install.mjs` writes it for you.
+#
+# The row names the Host half by absolute file URL, so the plugin needs no
+# install step: the loader's own resolver locates `src/index.ts`, and the
+# nearest `package.json` is what lets the client-module scanner see the
+# `dsh.client` declaration and serve `src/client.js` as the browser bundle.
+
+- insert:
+    - id: balance-guard
+      name: 'file:///D:/vibecoding/dshplugins/dsh-balance-guard/src/index.ts'
+      config:
+        # Multiplier over the expected remaining cost before declaring a shortfall.
+        safetyRatio: 0.2
+        # Amount that must stay untouched, in the account currency.
+        minReserveCny: 2
+        # Serve a balance reading for this long before reading again.
+        balanceTtlMs: 25000
+        # Background balance refresh cadence.
+        balancePollMs: 30000
+        # Timeout handed to the account service for one balance read.
+        balanceTimeoutMs: 30000
+        # Browser poll hint while a turn is running.
+        runningPollHintMs: 1000
+        # Browser poll cadence while idle.
+        idlePollMs: 15000
+        # CNY per USD for the USD-quoted price catalog.
+        cnyPerUsd: 7.2
+        # Remaining steps assumed when the session has no history.
+        assumedSteps: 8
+        # Output tokens per step assumed when the turn has no sample.
+        assumedOutputTokens: 1200
+        # Prompt growth per step assumed when the turn has no sample.
+        assumedGrowthTokens: 4000
+        # Cache-hit ratio assumed when the turn has no prompt sample.
+        assumedCacheHit: 0.85
+        # UTC dates DeepSeek bills at off-peak all day (Chinese public holidays).
+        holidays: []
+        # Subtract spend that landed after the balance reading.
+        balanceLagCompensation: true
+        # Client version used when the page cannot report one.
+        clientVersion: ""
