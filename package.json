@@ -1,6 +1,6 @@
 {
   "name": "dsh-balance-guard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "DSH plugin: your DeepSeek account balance as a colour-banded bar on the right edge, with per-turn cost prediction and a quiet low-balance warning.",
   "license": "MIT",
