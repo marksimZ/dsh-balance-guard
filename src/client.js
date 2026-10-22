@@ -374,6 +374,8 @@ window.__ModuleLoader__.load({
 
       if (state === 'signed-out') notes.push('在 DSH 账号设置里登录后显示余额')
       if (state === 'unavailable') notes.push('未找到 DSH 账号服务，插件无法读取余额')
+      if (account.source === 'api-key') notes.push('余额来源：API Key 账户')
+      else if (account.source === 'account') notes.push('余额来源：DSH 账号')
 
       if (account.error !== undefined) {
         notes.push('⚠ ' + account.error + '（' + relativeTime(account.errorAt, now) + '）')
